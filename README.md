@@ -1,92 +1,93 @@
-# Motion Capture CAE Anomaly Detection
+# Convolutional autoencoder for female vs male gait recognition
 
-Convolutional autoencoder pipeline for detecting gait anomalies in motion capture data. The project follows the idea from the cited paper: train the reconstruction model on female gait cycles and treat male gait cycles as anomalies when their reconstruction error is higher.
+Anomaly detection in motion-capture data using a convolutional autoencoder (CAE).
+The autoencoder learns one sex's gait (the "normal" class) and detects the other sex
+as an anomaly based on a higher reconstruction error.
 
-## Based On
+## Sources
 
-- Dataset article: https://www.nature.com/articles/s41597-024-03420-y
-- Method paper: https://link.springer.com/article/10.1007/s11831-025-10260-5
+- Dataset: https://www.nature.com/articles/s41597-024-03420-y (figshare DOI `10.6084/m9.figshare.c.7056797`)
+- Method: https://link.springer.com/article/10.1007/s11831-025-10260-5
 
-## Repository Layout
+## Files
 
-- [data_reader.py](data_reader.py) - CSV discovery, parsing, interpolation, and dataset splitting
-- [dataset_torch.py](dataset_torch.py) - PyTorch dataset wrapper
-- [model.py](model.py) - 1D convolutional autoencoder
-- [train.py](train.py) - train/validation utilities
-- [evaluate.py](evaluate.py) - anomaly scoring and metrics
-- [run_experiment.py](run_experiment.py) - end-to-end experiment runner
-- [requirements.txt](requirements.txt) - Python dependencies
+- [data_reader.py](data_reader.py) - CSV loading, event parsing, **per-cycle segmentation**, subject-wise split, normalization
+- [dataset_torch.py](dataset_torch.py) - PyTorch `Dataset` wrapper
+- [model.py](model.py) - 1D convolutional autoencoder with a vector bottleneck
+- [train.py](train.py) - training loop (loss = MSE + derivative MSE)
+- [evaluate.py](evaluate.py) - anomaly scoring and metrics (ROC-AUC, AP, threshold)
+- [run_experiment.py](run_experiment.py) - full end-to-end experiment
+- [mnist_experiment.py](mnist_experiment.py) - preliminary MNIST anomaly experiment (digit 9)
+- [visualize.py](visualize.py) - generate figures for the gait experiment
+- [evaluate_seeds.py](evaluate_seeds.py) - multi-seed evaluation (both directions, mean +/- std)
+- [supervised_baseline.py](supervised_baseline.py) - supervised ceiling (subject-wise CV)
+- [REPORT.md](REPORT.md) - results and analysis
 
-## Requirements
+## Data
 
-- Python 3.12 was used in the workspace environment
-- PyTorch, NumPy, Pandas, SciPy, and scikit-learn
-- Access to the dataset directory downloaded from the article
-
-## Expected Dataset Structure
-
-The loader expects a directory layout like this:
+The dataset is a single `Data_Run_Walk.zip` file (~28 GB) from figshare. Only the
+`Walk_Comfortable` (overground) condition is needed for the experiment - it is enough to
+extract the files `*/Session*/Overground_Walk/Walk_Comfortable/Post_Process/Walk_Comfortable*.csv`
+and `metadata.xlsx`, preserving the directory structure:
 
 ```text
 Data_Run_Walk/
-	SUBJECT_ID/
-		Session1/
-			Overground_Walk/
-				Walk_Comfortable/
-					Post_Process/
-						Walk_Comfortable1.csv
-				Walk_Fast/
-				Walk_Slow/
-		Session2/
+  AJ026/
+    Session1/Overground_Walk/Walk_Comfortable/Post_Process/Walk_Comfortable1.csv
+    Session2/...
+  metadata.xlsx
 ```
 
-## Install
+## Running
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
+Full experiment (default: train on males, latent 16):
 
-## Run
-
-Run the full experiment on the real dataset:
-
-```bash
-python3 run_experiment.py --dataset-root /path/to/Data_Run_Walk
+```powershell
+python run_experiment.py --dataset-root "E:\ML_datasets\Data_Run_Walk" --normal-class M
 ```
 
 Useful options:
 
-```bash
-python3 run_experiment.py --epochs 50 --batch-size 32 --val-percentile 1
+```powershell
+python run_experiment.py --epochs 60 --latent-dim 16 --normal-class M --val-percentile 95
 ```
 
-Run a synthetic smoke test without the real dataset:
+Smoke test on synthetic data (no dataset needed):
 
-```bash
-python3 run_experiment.py --smoke-test
+```powershell
+python run_experiment.py --smoke-test
 ```
 
-Outputs are written to `artifacts/`:
+Generate figures and run the MNIST preliminary experiment:
 
-- `best_model.pt`
-- `metrics.json`
-- `report.md`
+```powershell
+python visualize.py
+python mnist_experiment.py --latent-dim 8 --epochs 25
+```
 
-The processed dataset cache is stored in `cache/processed_walk_comfortable.npz` and reused on later runs.
+Reproduce the numbers cited in the report:
 
-## What The Pipeline Does
+```powershell
+python evaluate_seeds.py --seeds 10        # multi-seed mean +/- std, both directions
+python supervised_baseline.py              # supervised ceiling (subject-wise CV)
+```
 
-1. Loads gait cycles from female and male subjects.
-2. Normalizes each cycle to a fixed length.
-3. Splits the data subject-wise so that training and validation use only female cycles, while test includes the remaining female cycles plus all male cycles.
-4. Trains a convolutional autoencoder on female cycles.
-5. Uses the validation reconstruction error to set an anomaly threshold.
-6. Reports ROC-AUC, average precision, and threshold-based classification metrics on the test set.
-7. Adds a derivative-based reconstruction penalty and score to better separate gait dynamics.
+Outputs go to `artifacts/`: `best_model.pt`, `metrics.json`, `report.md`.
+Processed data is cached in `cache/processed_walk_comfortable.npz`
 
-## Notes
+## What the pipeline does
 
-- If the dataset path is wrong, the loader now fails with a clear error.
-- If you want, I can also add a small results notebook or a table-ready CSV export of the metrics.
+1. Loads gait trials and **segments them into individual cycles** (foot strike -> next), normalizing each to 101 samples.
+2. Selects 24 joint-angle channels (Hip/Knee/Ankle/Pelvis x L/R x XYZ).
+3. Splits the data subject-wise: train/val = only the normal class; test = the rest of the normal class + the entire anomaly class.
+4. Z-score normalizes using training statistics.
+5. Trains a bottlenecked CAE on the normal class.
+6. Computes a threshold from the validation errors (percentile) and test metrics:
+   ROC-AUC and AP (threshold-free), accuracy/precision/recall/F1, plus
+   subject-level ROC-AUC and a Mann-Whitney test of the error difference.
+
+## Results (summary)
+
+Trained on males, latent 16 - single run (seed 42): **ROC-AUC 0.76 (cycle) / 0.79 (subject), AP 0.91**;
+over 10 seeds: **0.73 ± 0.08 (cycle), 0.78 ± 0.11 (subject)**. The MNIST preliminary experiment
+(digit 9 as anomaly) reaches ROC-AUC 0.71. Full analysis and figures in [REPORT.md](REPORT.md).

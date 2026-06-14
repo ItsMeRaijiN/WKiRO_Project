@@ -37,6 +37,7 @@ cache/*.npz
 artifacts/report.md
 artifacts/metrics.json
 artifacts/best_model.pt
+figures/
 
 # Model weights
 *.pt

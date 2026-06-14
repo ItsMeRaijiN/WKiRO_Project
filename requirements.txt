@@ -2,4 +2,7 @@ numpy
 pandas
 scipy
 scikit-learn
+matplotlib
+c3d
 torch
+torchvision
