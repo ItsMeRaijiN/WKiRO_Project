@@ -4,7 +4,7 @@
 
 Anomaly detection in motion-capture data: train a convolutional autoencoder (CAE)
 on one sex's gait and treat the other sex as an anomaly (higher reconstruction error).
-Data: *Gueugnon et al. 2024* (Nature Scientific Data, `s41597-024-03420-y`),
+Data: *Riglet et al. 2024* (Nature Scientific Data, `s41597-024-03420-y`),
 condition `Walk_Comfortable` (overground).
 
 ## Key fixes over the baseline version

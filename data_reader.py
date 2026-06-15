@@ -1,7 +1,7 @@
 """
 data_reader.py
 ==============
-Reader and preprocessor for the motion-capture dataset by Gueugnon et al. (2024).
+Reader and preprocessor for the motion-capture dataset by Riglet et al. (2024).
 Goal: prepare data for training a 1D convolutional autoencoder (CAE) for anomaly
 detection (female vs male gait).
 
