@@ -1,16 +1,5 @@
 """
-visualize.py
-============
-Generate figures for the report for the main experiment (female vs male gait):
-  - training curve (train/val loss),
-  - reconstruction-error distribution: males (normal) vs females (anomaly),
-  - ROC curve (cycle level),
-  - example cycle reconstructions (original vs reconstruction).
-
-Uses the raw-cycles cache `cache/cycles_raw.npz` (X, y, subj, channels). If the cache
-is missing, it is rebuilt from the dataset via load_dataset (so deleting cache/ and
-re-running this script regenerates everything). Trains the AE in the default config
-(train on M, latent 16) and saves PNGs to figures/.
+Generate figures
 
 Run:
     python visualize.py
@@ -37,7 +26,6 @@ from evaluate import compute_scores
 
 
 def load_or_build_cache(cache_path: Path, dataset_root: str, num_workers: int):
-    """Load the raw-cycles cache, or build it from the dataset if missing."""
     if cache_path.exists():
         d = np.load(cache_path, allow_pickle=True)
         return d["X"].astype(np.float32), d["y"].astype(int), d["subj"], d["channels"].tolist()
@@ -115,7 +103,7 @@ def main():
     roc = roc_auc_score(labels, scores)
     gender_te = np.array(["M" if yy == 1 else "F" for yy in y[ite]])
 
-    # 1) Training curve
+    #Training curve
     plt.figure(figsize=(7, 4))
     plt.plot(hist_tr, label="train")
     plt.plot(hist_va, label="val")
@@ -124,7 +112,7 @@ def main():
     plt.legend(); plt.tight_layout()
     plt.savefig(figdir / "gait_training_curve.png", dpi=130); plt.close()
 
-    # 2) Error distribution: M (normal) vs F (anomaly)
+    # Error distribution normal v anomaly
     err_m = scores[gender_te == "M"]; err_f = scores[gender_te == "F"]
     plt.figure(figsize=(7, 4))
     plt.hist(err_m, bins=40, alpha=0.6, density=True, label="Males (normal)")
@@ -134,7 +122,7 @@ def main():
     plt.legend(); plt.tight_layout()
     plt.savefig(figdir / "gait_error_dist.png", dpi=130); plt.close()
 
-    # 3) ROC curve
+    # ROC curve
     fpr, tpr, _ = roc_curve(labels, scores)
     plt.figure(figsize=(5, 5))
     plt.plot(fpr, tpr, label=f"AUC={roc:.3f}")
@@ -143,7 +131,7 @@ def main():
     plt.legend(); plt.tight_layout()
     plt.savefig(figdir / "gait_roc.png", dpi=130); plt.close()
 
-    # 4) Example reconstructions (original vs reconstruction), in degrees
+    #Example reconstructions
     show_channels = ["LKneeAngles_X", "LHipAngles_X", "LAnkleAngles_X"]
     ch_idx = [channels.index(c) for c in show_channels if c in channels]
     i_norm = next(i for i in range(len(ite)) if gender_te[i] == "M")
@@ -152,7 +140,7 @@ def main():
     with torch.no_grad():
         xb = torch.tensor(nz(X[ite][[i_norm, i_anom]]), dtype=torch.float32, device=device)
         rec = model(xb).cpu().numpy()
-    rec_deg = rec * std + mean       # denormalize to degrees
+    rec_deg = rec * std + mean
     orig_deg = X[ite][[i_norm, i_anom]]
 
     fig, axes = plt.subplots(2, len(ch_idx), figsize=(4 * len(ch_idx), 6), squeeze=False)

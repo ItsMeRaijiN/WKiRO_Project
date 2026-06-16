@@ -1,9 +1,5 @@
 """
 mnist_experiment.py
-===================
-Preliminary experiment from the task description: a convolutional autoencoder (CAE)
-as an anomaly detector on MNIST. We train the AE ONLY on digits 0-8 and treat digit 9
-as an anomaly, expecting a higher reconstruction error for it.
 
 Metrics: ROC-AUC, average precision + threshold-based metrics. Also saves figures.
 
@@ -29,8 +25,6 @@ import matplotlib.pyplot as plt
 
 
 class ConvAE2d(nn.Module):
-    """Small 2D convolutional autoencoder for 28x28 images with a bottleneck."""
-
     def __init__(self, latent_dim: int = 16):
         super().__init__()
         self.encoder = nn.Sequential(
@@ -43,7 +37,6 @@ class ConvAE2d(nn.Module):
             nn.ConvTranspose2d(32, 16, 4, stride=2, padding=1), nn.GELU(),  # 7 -> 14
             nn.ConvTranspose2d(16, 1, 4, stride=2, padding=1), nn.Sigmoid(),  # 14 -> 28
         )
-
     def forward(self, x):
         z = self.to_latent(self.encoder(x))
         h = self.from_latent(z).view(-1, 32, 7, 7)
@@ -59,7 +52,6 @@ def load_mnist(root):
     Xte = test.data.float().unsqueeze(1) / 255.0
     yte = test.targets.clone()
     return Xtr, ytr, Xte, yte
-
 
 @torch.no_grad()
 def recon_error(model, X, device, batch=512):
@@ -94,8 +86,6 @@ def main():
 
     Xtr, ytr, Xte, yte = load_mnist(args.data_root)
     a = args.anomaly_digit
-
-    # Train only on digits != 9
     normal_mask = ytr != a
     Xn = Xtr[normal_mask]
     perm = torch.randperm(len(Xn))
@@ -124,9 +114,8 @@ def main():
         history.append((tr, va))
         print(f"Epoch {ep:02d} | train={tr:.6f} | val={va:.6f}")
 
-    # Evaluation on the test set
     scores = recon_error(model, Xte, device)
-    labels = (yte.numpy() == a).astype(int)   # 1 = anomaly
+    labels = (yte.numpy() == a).astype(int)
     roc = roc_auc_score(labels, scores)
     apr = average_precision_score(labels, scores)
 
@@ -143,14 +132,13 @@ def main():
         "normal_mean_error": float(scores[labels == 0].mean()),
         "anomaly_mean_error": float(scores[labels == 1].mean()),
     }
-    print("\n=== MNIST EVALUATION ===")
+    print("\nMNIST EVALUATION")
     for k, v in metrics.items():
         print(f"  {k}: {v}")
     with (out / "metrics.json").open("w", encoding="utf-8") as h:
         json.dump(metrics, h, indent=2)
 
-    # --- Figures ---
-    # 1) Error distribution
+    #figures
     plt.figure(figsize=(7, 4))
     plt.hist(scores[labels == 0], bins=60, alpha=0.6, density=True, label="Normal (0-8)")
     plt.hist(scores[labels == 1], bins=60, alpha=0.6, density=True, label=f"Anomaly ({a})")
@@ -160,7 +148,7 @@ def main():
     plt.legend(); plt.tight_layout()
     plt.savefig(figdir / "mnist_error_hist.png", dpi=130); plt.close()
 
-    # 2) ROC curve
+    # ROC
     fpr, tpr, _ = roc_curve(labels, scores)
     plt.figure(figsize=(5, 5))
     plt.plot(fpr, tpr, label=f"AUC={roc:.3f}")
@@ -169,7 +157,7 @@ def main():
     plt.legend(); plt.tight_layout()
     plt.savefig(figdir / "mnist_roc.png", dpi=130); plt.close()
 
-    # 3) Example reconstructions (normal vs anomaly)
+    # Example reconstructions
     model.eval()
     idx_norm = np.where(labels == 0)[0][:8]
     idx_anom = np.where(labels == 1)[0][:8]

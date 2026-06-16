@@ -10,14 +10,12 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 
-
 def _unwrap_batch(batch):
     if isinstance(batch, (tuple, list)):
         if len(batch) == 1:
             return batch[0], None
         return batch[0], batch[1]
     return batch, None
-
 
 @torch.no_grad()
 def compute_scores(model, loader, device):
@@ -59,7 +57,7 @@ def evaluate(scores, labels, threshold=None):
     roc = roc_auc_score(labels, scores)
     ap = average_precision_score(labels, scores)
 
-    print("\n=== EVALUATION ===")
+    print("\nEVALUATION")
     print(f"ROC-AUC: {roc:.4f}")
     print(f"AP:      {ap:.4f}")
 

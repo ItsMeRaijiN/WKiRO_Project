@@ -1,7 +1,6 @@
 import torch
 from torch.utils.data import Dataset
 
-
 class MocapDataset(Dataset):
     def __init__(self, X, y=None):
         self.X = torch.tensor(X, dtype=torch.float32)

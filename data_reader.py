@@ -1,28 +1,7 @@
 """
 data_reader.py
-==============
+
 Reader and preprocessor for the motion-capture dataset by Riglet et al. (2024).
-Goal: prepare data for training a 1D convolutional autoencoder (CAE) for anomaly
-detection (female vs male gait).
-
-CSV file layout (Vicon "Post_Process" export):
-  Rows 0-3: metadata (FrameNumber, FirstFrame, PointFrequency, AnalogFrequency)
-  Next rows: events (Right/Left_Foot_Strike/Off) - times in seconds
-  Then THE FILE CONTAINS SEVERAL DATA BLOCKS, each with its own "Time" header:
-    BLOCK 1 (model outputs, 100 Hz): joint angles/moments/powers  <-- ONLY this one is read
-    BLOCK 2 (ground reaction wrench, 100 Hz)
-    BLOCK 3 (analog, 1000 Hz): raw forces Fx/Fy/Fz
-  Each block header is 3 rows: names / units / axes (X/Y/Z), followed by data.
-
-IMPORTANT: a single Walk_Comfortable{N}.csv file contains a WHOLE pass with SEVERAL
-gait cycles (usually 1-3). We therefore segment it into individual gait cycles using
-foot-strike events, and normalize each cycle to 0-100% (101 samples).
-
-Sex labels:
-  Each subject's sex comes from the dataset's metadata.xlsx sheet (column "Sex").
-  GENDER_MAP was verified 1:1 against metadata.xlsx (14 females / 16 males).
-  Female (F) -> label 0 (normal), Male (M) -> label 1 (anomaly).
-  Subjects outside the map (e.g. the "Python Code" folder) are skipped.
 
 Selected channels:
   By default 24 joint-angle channels (joint rotations) - fully reliable and aligned
@@ -44,13 +23,6 @@ from scipy.signal import savgol_filter
 
 warnings.filterwarnings("ignore", category=pd.errors.DtypeWarning)
 
-
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-
-# Channels to extract - names from the block-1 header row (without X/Y/Z axes).
-# Default: lower-limb and pelvis joint angles (8 groups x 3 axes = 24 channels).
 SELECTED_CHANNELS = [
     "LHipAngles",    "RHipAngles",
     "LKneeAngles",   "RKneeAngles",
@@ -58,26 +30,13 @@ SELECTED_CHANNELS = [
     "LPelvisAngles", "RPelvisAngles",
 ]
 
-# Optional channels (kinetics) - can be added, but are often zero in overground:
-#   "LGroundReactionForce", "RGroundReactionForce",
-#   "LKneeMoment", "RKneeMoment",     # usually reliable
-#   "LKneePower",  "RKneePower",      # in this dataset effectively always zero
-
-# Number of samples after cycle normalization (0-100% of the gait cycle)
 N_SAMPLES = 101
-
-# Leg whose foot strikes define cycles (cycle = strike -> next strike of the same leg)
 CYCLE_LEG = "Right"
-
-# Sanity check for a single cycle (at 100 Hz a gait cycle is ~0.8-1.4 s)
 MIN_CYCLE_FRAMES = 40
 MIN_CYCLE_SEC = 0.5
 MAX_CYCLE_SEC = 2.5
-
-# Walking speeds to include
 WALK_CONDITIONS = ["Walk_Comfortable"]
 
-# Sex per subject ID - verified against metadata.xlsx (14 F / 16 M)
 GENDER_MAP = {
     "AJ026": "F",
     "BD004": "F",
@@ -104,33 +63,21 @@ GENDER_MAP = {
     "RC020": "F",
     "RC023": "F",
     "RV028": "M",
-    "SA017": "F",   # verified against metadata.xlsx (was incorrectly "M")
+    "SA017": "F",
     "SM019": "F",
     "TB030": "M",
-    "TK029": "F",   # verified against metadata.xlsx (was incorrectly "M")
+    "TK029": "F",
     "YX024": "M",
 }
-# Total: 14 females / 16 males - consistent with the article and metadata.xlsx.
-
-# Sessions (the dataset has Session1 and Session2 for each subject)
+# Total: 14 females / 16 males
 SESSIONS = ["Session1", "Session2"]
 
-
 def get_gender(subject_id: str) -> Optional[str]:
-    """Return 'F'/'M' for a known ID, otherwise None."""
     return GENDER_MAP.get(subject_id)
-
-
 def _normalize_token(value: object) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(value).strip().lower())
 
-
-# ---------------------------------------------------------------------------
-# Parsing a single CSV file (block 1 + events only)
-# ---------------------------------------------------------------------------
-
 _EVENT_RE = re.compile(r"^(Left|Right)_Foot_(Strike|Off)$", re.IGNORECASE)
-
 
 def _detect_delimiter(path: Path) -> str:
     candidates = [",", ";", "\t", "|"]
@@ -148,18 +95,7 @@ def _detect_delimiter(path: Path) -> str:
             best_score, best = score, cand
     return best
 
-
 def parse_mocap_trial(filepath: str | Path) -> Optional[dict]:
-    """
-    Read a single trial file and return a dict:
-        {
-            "df":     pd.DataFrame with columns [Time, <channel_axis>, ...] (block 1 only),
-            "events": {"Right_Foot_Strike": [t, ...], "Left_Foot_Strike": [...], ...},
-            "meta":   {"first_frame": int, "point_freq": float},
-        }
-    or None if the file is corrupt / required data is missing.
-    Reads only the first data block (model outputs, 100 Hz).
-    """
     filepath = Path(filepath)
     try:
         delimiter = _detect_delimiter(filepath)
@@ -178,7 +114,6 @@ def parse_mocap_trial(filepath: str | Path) -> Optional[dict]:
         except (ValueError, TypeError):
             return None
 
-    # --- Metadata and events (top of file, before the first "Time" header) ---
     meta = {"first_frame": None, "point_freq": 100.0}
     events: dict[str, list[float]] = {}
     header_idx = None
@@ -187,7 +122,7 @@ def parse_mocap_trial(filepath: str | Path) -> Optional[dict]:
             continue
         key = str(row[0]).strip()
         if _normalize_token(key) == "time":
-            header_idx = i  # first header = block 1
+            header_idx = i
             break
         if key == "FirstFrame":
             meta["first_frame"] = as_num(row[1]) if len(row) > 1 else None
@@ -203,12 +138,9 @@ def parse_mocap_trial(filepath: str | Path) -> Optional[dict]:
         print(f"  [WARNING] No 'Time' header in {filepath.name}")
         return None
 
-    # Block-1 header: names / units / axes ; data starts at header_idx + 3
     names_row = rows[header_idx]
     axes_row = rows[header_idx + 2] if header_idx + 2 < len(rows) else []
     data_start = header_idx + 3
-
-    # --- Map: channel_name -> column indices (X, Y, Z) ---
     channel_cols: dict[str, list[int]] = {}
     current = None
     for col_idx, name in enumerate(names_row):
@@ -219,7 +151,6 @@ def parse_mocap_trial(filepath: str | Path) -> Optional[dict]:
         if current and _normalize_token(current) != "time":
             channel_cols[current].append(col_idx)
 
-    # --- Block-1 data: read until empty row / non-numeric Time / next block ---
     block_rows: list[list[str]] = []
     for row in rows[data_start:]:
         if not row or not str(row[0]).strip():
@@ -255,16 +186,7 @@ def parse_mocap_trial(filepath: str | Path) -> Optional[dict]:
     df = df[~df["Time"].isna()].reset_index(drop=True)
     return {"df": df, "events": events, "meta": meta}
 
-
-# ---------------------------------------------------------------------------
-# Segmentation into individual gait cycles + normalization to 101 samples
-# ---------------------------------------------------------------------------
-
 def _resample_to(segment: np.ndarray, n_samples: int) -> np.ndarray:
-    """
-    Interpolate a cycle (frames, n_channels) to (n_samples, n_channels) - normalization
-    to 0-100% of the cycle. Fills NaNs and lightly smooths (Savitzky-Golay).
-    """
     n_orig, n_ch = segment.shape
     x_orig = np.linspace(0.0, 1.0, n_orig)
     x_new = np.linspace(0.0, 1.0, n_samples)
@@ -285,17 +207,11 @@ def _resample_to(segment: np.ndarray, n_samples: int) -> np.ndarray:
 
     return out
 
-
 def segment_cycles(
     parsed: dict,
     n_samples: int = N_SAMPLES,
     leg: str = CYCLE_LEG,
 ) -> list[np.ndarray]:
-    """
-    Split a trial into individual gait cycles by foot strikes of the chosen leg.
-    Cycle = [strike_i, strike_{i+1}]; each normalized to n_samples.
-    Returns a list of arrays (n_samples, n_channels).
-    """
     df = parsed["df"]
     events = parsed["events"]
     feature_cols = [c for c in df.columns if c != "Time"]
@@ -320,21 +236,11 @@ def segment_cycles(
 
     return cycles
 
-
-# ---------------------------------------------------------------------------
-# Dataset directory scan
-# ---------------------------------------------------------------------------
-
 def find_cycle_files(
     dataset_root: str | Path,
     conditions: list[str] = WALK_CONDITIONS,
     sessions: list[str] = SESSIONS,
 ) -> list[dict]:
-    """
-    Walk the dataset tree and return a list of trial files:
-        {"path", "subject_id", "gender", "session", "condition", "trial_num"}
-    Pattern: {root}/{ID}/{Session}/Overground_Walk/{condition}/Post_Process/{condition}{N}.csv
-    """
     dataset_root = Path(dataset_root)
     if not dataset_root.exists():
         raise FileNotFoundError(f"Dataset root does not exist: {dataset_root}")
@@ -368,11 +274,6 @@ def find_cycle_files(
                         })
     return records
 
-
-# ---------------------------------------------------------------------------
-# Main loader - builds the ready dataset (per gait cycle)
-# ---------------------------------------------------------------------------
-
 def load_dataset(
     dataset_root: str | Path,
     conditions: list[str] = WALK_CONDITIONS,
@@ -382,18 +283,6 @@ def load_dataset(
     num_workers: int = 1,
     leg: str = CYCLE_LEG,
 ) -> dict:
-    """
-    Load the whole dataset as individual gait cycles and return a dict:
-        {
-            "X":        np.ndarray (N, n_samples, n_channels),
-            "y":        np.ndarray (N,)  0=female, 1=male,
-            "gender":   list[str],
-            "meta":     list[dict]  (trial metadata + cycle index),
-            "channels": list[str],
-            "stats":    dict,
-        }
-    Samples with unknown sex are skipped.
-    """
     records = find_cycle_files(dataset_root, conditions, sessions)
     if verbose:
         print(f"Found {len(records)} trial files (all sexes).")
@@ -493,13 +382,7 @@ def load_dataset(
         "stats":    stats,
     }
 
-
-# ---------------------------------------------------------------------------
-# Amplitude normalization (per-channel z-score)
-# ---------------------------------------------------------------------------
-
 def compute_normalization_stats(X_train: np.ndarray) -> dict:
-    """Compute per-channel mean and std on the training set (normal class)."""
     mean = X_train.mean(axis=(0, 1), keepdims=True)
     std = X_train.std(axis=(0, 1), keepdims=True)
     std = np.where(std < 1e-8, 1.0, std)
@@ -507,18 +390,10 @@ def compute_normalization_stats(X_train: np.ndarray) -> dict:
 
 
 def normalize_zscore(X: np.ndarray, stats: dict) -> np.ndarray:
-    """Z-score normalize X using the training statistics."""
     return (X - stats["mean"]) / stats["std"]
 
-
 def denormalize_zscore(X_norm: np.ndarray, stats: dict) -> np.ndarray:
-    """Invert the z-score normalization."""
     return X_norm * stats["std"] + stats["mean"]
-
-
-# ---------------------------------------------------------------------------
-# Train/val/test split (subject-wise)
-# ---------------------------------------------------------------------------
 
 def split_dataset(
     dataset: dict,
@@ -527,14 +402,6 @@ def split_dataset(
     val_ratio: float = 0.15,
     seed: int = 42,
 ) -> dict:
-    """
-    Split strategy (anomaly detection):
-      - "normal" class = normal_label (0=F, 1=M; default 1=males)
-      - TRAIN: 70% of normal-class subjects
-      - VAL:   15% of normal-class subjects -> for tuning and threshold
-      - TEST:  remaining normal-class subjects + ALL anomaly-class subjects
-    Subject-wise split (no subject leakage between train/val/test).
-    """
     rng = np.random.default_rng(seed)
     meta, y, X = dataset["meta"], dataset["y"], dataset["X"]
 
@@ -583,13 +450,7 @@ def split_dataset(
     print(f"  TEST:  {len(idx_test):4d} cycles | F={int(sum(y[idx_test]==0))} M={int(sum(y[idx_test]==1))}")
     return splits
 
-
-# ---------------------------------------------------------------------------
-# Data preview (diagnostics)
-# ---------------------------------------------------------------------------
-
 def describe_dataset(dataset: dict) -> None:
-    """Print basic dataset statistics."""
     X, y, channels = dataset["X"], dataset["y"], dataset["channels"]
     print(f"\nShape:      {X.shape}  (cycles x time x channels)")
     print(f"Labels:     0=F ({int((y==0).sum())}), 1=M ({int((y==1).sum())})")
@@ -599,11 +460,6 @@ def describe_dataset(dataset: dict) -> None:
         print(f"  {ch:<24s}  min={vals.min():8.2f}  mean={vals.mean():8.2f}  max={vals.max():8.2f}")
     if len(channels) > 5:
         print(f"  ... ({len(channels) - 5} more channels)")
-
-
-# ---------------------------------------------------------------------------
-# Entry point - usage example
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     import sys

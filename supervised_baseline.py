@@ -1,13 +1,8 @@
 """
 supervised_baseline.py
-======================
-Supervised "ceiling" for sex discriminability on the same gait cycles, using subject-wise
-GroupKFold cross-validation. This shows the sex signal is strongly present in the data
-(unlike the unsupervised reconstruction autoencoder, which is bounded by the dominant
-individual-style variability). Reproduces the ceiling numbers cited in REPORT.md.
 
-Uses the raw-cycles cache `cache/cycles_raw.npz` (built automatically from the dataset
-if missing).
+Supervised ceiling for sex discriminability on the same gait cycles, using subject-wise
+GroupKFold cross-validation.
 
 Run:
     python supervised_baseline.py
@@ -27,7 +22,6 @@ from visualize import load_or_build_cache
 
 
 def cv_auc(features, y, groups, classifier_factory, scale=False, n_splits=5):
-    """Out-of-fold ROC-AUC with subject-wise GroupKFold."""
     gkf = GroupKFold(n_splits=n_splits)
     oof = np.zeros(len(features))
     for tr, te in gkf.split(features, y, groups=groups):
@@ -51,12 +45,12 @@ def main():
     X, y, subj, _ = load_or_build_cache(Path(args.cache), args.dataset_root, args.num_workers)
     y = y.astype(int)
     N = len(X)
-    Xflat = X.reshape(N, -1)                 # flattened cycle curves
-    rom = X.max(axis=1) - X.min(axis=1)      # per-channel range of motion
+    Xflat = X.reshape(N, -1)
+    rom = X.max(axis=1) - X.min(axis=1)
 
     print(f"Cycles: {N}, features: {Xflat.shape[1]}, "
           f"F={int((y == 0).sum())} M={int((y == 1).sum())}, subjects={len(set(subj))}")
-    print(f"\nSupervised ceiling (subject-wise {args.n_splits}-fold GroupKFold):")
+    print(f"\nSupervised ceiling ({args.n_splits}-fold GroupKFold):")
     print(f"  LogisticRegression (flattened): ROC-AUC = "
           f"{cv_auc(Xflat, y, subj, lambda: LogisticRegression(max_iter=2000, C=0.1), scale=True, n_splits=args.n_splits):.4f}")
     print(f"  RandomForest (flattened):       ROC-AUC = "

@@ -1,13 +1,8 @@
 """
 run_experiment.py
-=================
-Train a convolutional autoencoder (CAE) for gait anomaly detection and sex
-recognition based on reconstruction error.
 
-Idea: train the AE ONLY on the "normal" class (males by default) and treat the other
-sex as an anomaly - we expect a higher reconstruction error for it. Threshold-free
-metrics: ROC-AUC, average precision; additionally cycle-level and subject-level
-evaluation, plus a statistical test of the error distributions (Mann-Whitney U).
+Train a convolutional autoencoder for gait anomaly detection and sex
+recognition based on reconstruction error.
 """
 
 import argparse
@@ -98,7 +93,6 @@ def build_synthetic_dataset(n_female=48, n_male=48, n_samples=101):
     X = np.concatenate([female, male], axis=0)
     y = np.concatenate([np.zeros(n_female, dtype=np.int8), np.ones(n_male, dtype=np.int8)])
     gender = ["F"] * n_female + ["M"] * n_male
-    # Each "subject" has a few cycles so the subject-wise split is meaningful
     meta = [{"subject_id": f"F{i // 4:03d}"} for i in range(n_female)] + \
            [{"subject_id": f"M{i // 4:03d}"} for i in range(n_male)]
     stats = {"F": n_female, "M": n_male, "unknown": 0, "errors": 0}
@@ -112,7 +106,6 @@ def _attach_subjects(splits):
 
 
 def _process(dataset, normal_label):
-    """Subject-wise split + z-score normalization using training statistics."""
     splits = split_dataset(dataset, normal_label=normal_label)
     splits = _attach_subjects(splits)
     norm = compute_normalization_stats(splits["train"]["X"])
@@ -177,7 +170,6 @@ def get_splits(args, normal_label):
 
 
 def subject_level_roc(scores, anomaly, subjects):
-    """Average the error over each subject's cycles and compute subject-level ROC-AUC."""
     subjects = np.asarray(subjects)
     s_scores, s_labels = [], []
     for s in sorted(set(subjects)):
@@ -196,22 +188,18 @@ def main():
     device = torch.device(args.device)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-
     normal_label = NORMAL_MAP[args.normal_class]
     splits, norm, normal_label = get_splits(args, normal_label)
     anomaly_name = "F" if normal_label == 1 else "M"
     print(f"\nNormal class: {args.normal_class} (label={normal_label}) | anomaly: {anomaly_name}")
 
-    # Test anomaly labels: 1 = anomaly (class != normal)
     test_y = np.asarray(splits["test"]["y"]).astype(int)
     test_anom = (test_y != normal_label).astype(np.float32)
     test_gender = np.asarray(splits["test"]["gender"])
     test_subj = splits["test"]["subj"]
-
     train_loader = DataLoader(MocapDataset(splits["train"]["X"]), batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(MocapDataset(splits["val"]["X"]), batch_size=args.batch_size)
     test_loader = DataLoader(MocapDataset(splits["test"]["X"], test_anom), batch_size=args.batch_size)
-
     n_channels = splits["train"]["X"].shape[-1]
     model = Conv1dCAE(n_channels=n_channels, latent_dim=args.latent_dim, seq_len=args.n_samples).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -234,14 +222,11 @@ def main():
         output_dir / "best_model.pt",
     )
 
-    # --- Evaluation ---
     val_scores, _ = compute_scores(model, val_loader, device)
     threshold = select_threshold(val_scores, percentile=args.val_percentile)
 
     test_scores, test_labels = compute_scores(model, test_loader, device)
     metrics = evaluate(test_scores, test_labels, threshold=threshold)
-
-    # Errors by sex + statistical test
     female_scores = test_scores[test_gender == "F"]
     male_scores = test_scores[test_gender == "M"]
     anomaly_scores = test_scores[test_labels == 1]
@@ -282,7 +267,7 @@ def main():
         h.write("# CAE Report - gait anomaly detection (sex)\n\n")
         h.write("## Configuration\n\n")
         h.write(f"- Condition: Walk_Comfortable (overground), cycles segmented per foot strike\n")
-        h.write(f"- Normal class (training): **{args.normal_class}**, anomaly: **{anomaly_name}**\n")
+        h.write(f"- Normal class: **{args.normal_class}**, anomaly: **{anomaly_name}**\n")
         h.write(f"- Latent dimension: {args.latent_dim}\n")
         h.write(f"- Samples - train: {metrics['train_samples']}, val: {metrics['val_samples']}, test: {metrics['test_samples']}\n\n")
         h.write("## Results\n\n")
@@ -297,10 +282,10 @@ def main():
                 f"males: {metrics['male_mean_test_error']:.6f}\n")
         h.write(f"- Mann-Whitney U (anomaly > normal): U={metrics['mannwhitney_u']:.1f}, "
                 f"p={metrics['mannwhitney_p']:.3e}\n")
-        h.write(f"- Error quantiles (test): {metrics['score_quantiles_test']}\n\n")
+        h.write(f"- Error quantiles: {metrics['score_quantiles_test']}\n\n")
         h.write("## Notes\n\n")
         h.write("- Anomaly score = reconstruction MSE + 0.5 * temporal-derivative MSE.\n")
-        h.write("- Subject-wise split (no subject leakage between train/val/test).\n")
+        h.write("- Subject-wise split\n")
 
     print(f"\nSaved: {output_dir/'best_model.pt'}, {output_dir/'metrics.json'}, {report_path}")
 

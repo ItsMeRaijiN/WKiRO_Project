@@ -10,8 +10,6 @@ def _group_count(channels: int) -> int:
 
 
 class ConvBlock1d(nn.Module):
-    """Residual 1D convolutional block (Conv-GroupNorm-GELU)."""
-
     def __init__(self, in_channels: int, out_channels: int, *, stride: int = 1,
                  dilation: int = 1, dropout: float = 0.1):
         super().__init__()
@@ -36,17 +34,6 @@ class ConvBlock1d(nn.Module):
 
 
 class Conv1dCAE(nn.Module):
-    """
-    1D convolutional autoencoder with a vector-latent BOTTLENECK.
-
-    Input (B, T, C) -> convolutional encoder (downsampling) -> flatten ->
-    Linear to a small-dimensional latent vector (strong compression) -> Linear ->
-    ConvTranspose decoder (upsampling) -> output (B, T, C).
-
-    A small latent_dim forces the model to learn only the dominant ("normal") gait
-    pattern, so out-of-distribution samples (anomalies) get a higher reconstruction error.
-    """
-
     def __init__(self, n_channels: int, latent_dim: int = 24, *, base: int = 32,
                  seq_len: int = 101, dropout: float = 0.1):
         super().__init__()
@@ -59,7 +46,6 @@ class Conv1dCAE(nn.Module):
             ConvBlock1d(base * 2, base * 4, stride=2, dropout=dropout),     # -> T/8
         )
 
-        # Determine the length after the encoder (deterministic for a given seq_len)
         with torch.no_grad():
             dummy = torch.zeros(1, n_channels, seq_len)
             enc_out = self.encoder(dummy)

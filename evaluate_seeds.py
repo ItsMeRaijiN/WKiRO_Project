@@ -1,13 +1,7 @@
 """
 evaluate_seeds.py
-=================
+
 Multi-seed evaluation of the gait CAE anomaly detector, for both training directions.
-Reports mean +/- std of ROC-AUC (cycle), average precision, and ROC-AUC (subject) over
-several subject-wise splits. Reproduces the multi-seed numbers cited in REPORT.md.
-
-Uses the raw-cycles cache `cache/cycles_raw.npz` (built automatically from the dataset
-if missing).
-
 Run:
     python evaluate_seeds.py --seeds 10
 """
@@ -29,7 +23,6 @@ from visualize import load_or_build_cache, build_split
 
 
 def run_one(X, y, subj, normal_label, latent, epochs, seed, device):
-    """Train one AE on a subject-wise split and return (cycle ROC, AP, subject ROC)."""
     itr, iva, ite = build_split(X, y, subj, normal_label, seed)
     mean = X[itr].mean((0, 1), keepdims=True)
     std = X[itr].std((0, 1), keepdims=True)
@@ -44,7 +37,6 @@ def run_one(X, y, subj, normal_label, latent, epochs, seed, device):
     val_loader = DataLoader(MocapDataset(nz(X[iva])), batch_size=64)
     anom = (y[ite] != normal_label).astype(np.float32)
     test_loader = DataLoader(MocapDataset(nz(X[ite]), anom), batch_size=64)
-
     model = Conv1dCAE(X.shape[2], latent_dim=latent, seq_len=X.shape[1]).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
     best, best_state = 1e9, None
@@ -58,13 +50,11 @@ def run_one(X, y, subj, normal_label, latent, epochs, seed, device):
     scores, labels = compute_scores(model, test_loader, device)
     roc = roc_auc_score(labels, scores)
     ap = average_precision_score(labels, scores)
-
     ts = np.asarray(subj)[ite]
     s_scores = [scores[ts == s].mean() for s in sorted(set(ts))]
     s_labels = [int(anom[ts == s][0]) for s in sorted(set(ts))]
     subj_roc = roc_auc_score(s_labels, s_scores)
     return roc, ap, subj_roc
-
 
 def main():
     ap = argparse.ArgumentParser(description="Multi-seed evaluation (both training directions).")
