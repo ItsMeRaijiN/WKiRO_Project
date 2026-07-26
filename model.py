@@ -1,13 +1,11 @@
 import torch
-import torch.nn as nn
-
+from torch import nn
 
 def _group_count(channels: int) -> int:
     for groups in [8, 4, 2]:
         if channels % groups == 0:
             return groups
     return 1
-
 
 class ConvBlock1d(nn.Module):
     def __init__(self, in_channels: int, out_channels: int, *, stride: int = 1, dilation: int = 1, dropout: float = 0.1):
@@ -31,10 +29,12 @@ class ConvBlock1d(nn.Module):
         x = self.block(x)
         return self.activation(x + residual)
 
-
 class Conv1dCAE(nn.Module):
     def __init__(self, n_channels: int, latent_channels: int = 128):
         super().__init__()
+        if n_channels < 1 or latent_channels < 1:
+            raise ValueError("n_channels and latent_channels must be positive.")
+        self.n_channels = n_channels
 
         self.encoder = nn.Sequential(
             ConvBlock1d(n_channels, 64, stride=2),
@@ -71,6 +71,12 @@ class Conv1dCAE(nn.Module):
         return nn.functional.pad(x, (0, pad_amount))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.ndim != 3:
+            raise ValueError("Expected input shape (batch, time, channels).")
+        if x.shape[-1] != self.n_channels:
+            raise ValueError(
+                f"Expected {self.n_channels} channels, received {x.shape[-1]}."
+            )
         target_length = x.shape[1]
 
         # (B, T, C) -> (B, C, T)

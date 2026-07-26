@@ -1,6 +1,5 @@
 import torch
 
-
 def reconstruction_loss(x, x_hat, derivative_weight: float = 0.5):
     rec_loss = torch.mean((x - x_hat) ** 2)
     if x.shape[1] < 2:
@@ -11,16 +10,15 @@ def reconstruction_loss(x, x_hat, derivative_weight: float = 0.5):
     derivative_loss = torch.mean((x_diff - x_hat_diff) ** 2)
     return rec_loss + derivative_weight * derivative_loss
 
-
 def _unwrap_batch(batch):
     if isinstance(batch, (tuple, list)):
         return batch[0]
     return batch
 
-
 def train_epoch(model, loader, optimizer, device, grad_clip=None):
     model.train()
     total_loss = 0.0
+    total_samples = 0
 
     if len(loader) == 0:
         raise ValueError("Training loader is empty.")
@@ -38,15 +36,18 @@ def train_epoch(model, loader, optimizer, device, grad_clip=None):
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
 
         optimizer.step()
-        total_loss += loss.item()
+        batch_size = x.shape[0]
+        total_loss += loss.item() * batch_size
+        total_samples += batch_size
 
-    return total_loss / len(loader)
+    return total_loss / total_samples
 
 
 @torch.no_grad()
 def validate(model, loader, device):
     model.eval()
     total_loss = 0.0
+    total_samples = 0
 
     if len(loader) == 0:
         raise ValueError("Validation loader is empty.")
@@ -54,6 +55,8 @@ def validate(model, loader, device):
     for batch in loader:
         x = _unwrap_batch(batch).to(device)
         x_hat = model(x)
-        total_loss += reconstruction_loss(x, x_hat).item()
+        batch_size = x.shape[0]
+        total_loss += reconstruction_loss(x, x_hat).item() * batch_size
+        total_samples += batch_size
 
-    return total_loss / len(loader)
+    return total_loss / total_samples

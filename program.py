@@ -1,132 +1,121 @@
+import argparse
+from pathlib import Path
+
 import c3d
 import numpy as np
 
-# =============================
-# 0) Read C3D file
-# =============================
-name_c3d_file = "/mnt/e/ML_datasets/Data_Run_Walk/AJ026/Session1/Treadmill_Run/Treadmill_Run_Comfortable/Post_Process/Treadmill_Run_Comfortable.c3d"
 
-with open(name_c3d_file, 'rb') as handle:
-    reader = c3d.Reader(handle)
+def _clean_label(value) -> str:
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    return str(value).strip()
 
-    # =============================
-    # 1) Metadata
-    # =============================
-    first_frame = reader.header.first_frame
-    last_frame = reader.header.last_frame
-    number_points_frame = last_frame - first_frame
-    frequency_points = reader.header.frame_rate
+def _parameter_array(reader: c3d.Reader, key: str, attribute: str):
+    parameter = reader.get(key)
+    return None if parameter is None else getattr(parameter, attribute)
 
-    # Pobranie pierwszej ramki
-    points0, analogs0 = next(reader.read_frames())
-    analog_subframes = analogs0.shape[0] if analogs0 is not None else 1
-    frequency_analogs = frequency_points * analog_subframes
+def read_c3d(filepath: str | Path) -> dict:
+    filepath = Path(filepath)
+    if not filepath.is_file():
+        raise FileNotFoundError(f"C3D file does not exist: {filepath}")
 
-    print("Points rate:", frequency_points, "Hz")
-    print("Analogs rate:", frequency_analogs, "Hz")
+    with filepath.open("rb") as handle:
+        reader = c3d.Reader(handle)
+        first_frame = reader.first_frame
+        last_frame = reader.last_frame
+        point_rate = float(reader.point_rate)
+        analog_rate = float(reader.analog_rate)
 
-    # Anthropometry (jeśli istnieją)
-    height_subject = None
-    bodymass_subject = None
-    try:
-        processing = reader.groups['PROCESSING']
-        height_subject = processing.get('HEIGHT').float_array[0]
-        bodymass_subject = processing.get('BODYMASS').float_array[0]
-    except Exception:
-        pass
+        point_labels = [_clean_label(label) for label in reader.point_labels]
+        analog_labels = [_clean_label(label) for label in reader.analog_labels]
+        all_points = {label: [] for label in point_labels if label}
+        all_analogs = {label: [] for label in analog_labels if label}
 
-    # =============================
-    # 2) Points (markers)
-    # =============================
-    all_points = {}
-    point_labels = reader.point_labels
-    for label in point_labels:
-        if label.strip():
-            all_points[label] = []
+        frame_numbers = []
+        for frame_number, points, analog in reader.read_frames():
+            frame_numbers.append(int(frame_number))
+            for index, label in enumerate(point_labels):
+                if label:
+                    all_points[label].append(points[index, :3])
+            for index, label in enumerate(analog_labels):
+                if label and analog.size:
+                    all_analogs[label].extend(analog[index, :])
 
-    # =============================
-    # 3) Analogs
-    # =============================
-    all_analogs = {}
-    analog_labels = reader.analog_labels
-    for label in analog_labels:
-        if label.strip():
-            all_analogs[label] = []
+        all_points = {
+            label: np.asarray(values, dtype=np.float64)
+            for label, values in all_points.items()
+        }
+        all_analogs = {
+            label: np.asarray(values, dtype=np.float64)
+            for label, values in all_analogs.items()
+        }
 
-    # =============================
-    # 4) Iteracja po wszystkich ramkach
-    # =============================
-    # Pierwsza ramka już pobrana
-    frames = [(points0, analogs0)] + list(reader.read_frames())
-    for points, analogs in frames:
-        # --- Points ---
-        for idx, label in enumerate(point_labels):
-            if not label.strip():
-                continue
-            all_points[label].append(points[idx, :3])  # tylko XYZ
+        events = {}
+        contexts = _parameter_array(reader, "EVENT:CONTEXTS", "string_array")
+        labels = _parameter_array(reader, "EVENT:LABELS", "string_array")
+        times = _parameter_array(reader, "EVENT:TIMES", "float_array")
+        if contexts is not None and labels is not None and times is not None:
+            contexts = np.asarray(contexts).reshape(-1)
+            labels = np.asarray(labels).reshape(-1)
+            times = np.asarray(times).reshape(-1, 2)
+            event_count = min(len(contexts), len(labels), len(times))
+            for index in range(event_count):
+                side = _clean_label(contexts[index])
+                event_name = _clean_label(labels[index]).replace(" ", "_")
+                time_sec = float(times[index, 1])
+                frame = round(time_sec * point_rate)
+                events.setdefault(f"{side}_{event_name}", []).append(frame)
 
-        # --- Analogs ---
-        if analogs is not None:
-            for ch_idx, label in enumerate(analog_labels):
-                if not label.strip():
-                    continue
-                all_analogs[label].extend(analogs[:, ch_idx])
+        height = _parameter_array(reader, "PROCESSING:HEIGHT", "float_array")
+        bodymass = _parameter_array(reader, "PROCESSING:BODYMASS", "float_array")
 
-    # Konwersja do numpy
-    for k in all_points:
-        all_points[k] = np.array(all_points[k])
-    for k in all_analogs:
-        all_analogs[k] = np.array(all_analogs[k])
+    expected_frame_count = last_frame - first_frame + 1
+    if len(frame_numbers) != expected_frame_count:
+        raise ValueError(
+            f"C3D frame count mismatch: expected {expected_frame_count}, "
+            f"read {len(frame_numbers)}."
+        )
 
-    # =============================
-    # 5) Events
-    # =============================
-    all_events = {}
-    try:
-        events_group = reader.groups['EVENT']
-        contexts = events_group.get('CONTEXTS').string_array
-        labels = events_group.get('LABELS').string_array
-        times = events_group.get('TIMES').float_array.reshape(-1, 2)
+    return {
+        "path": filepath,
+        "first_frame": first_frame,
+        "last_frame": last_frame,
+        "frame_count": expected_frame_count,
+        "point_rate": point_rate,
+        "analog_rate": analog_rate,
+        "height": None if height is None else float(np.asarray(height).reshape(-1)[0]),
+        "bodymass": (
+            None if bodymass is None else float(np.asarray(bodymass).reshape(-1)[0])
+        ),
+        "points": all_points,
+        "analogs": all_analogs,
+        "events": events,
+    }
 
-        for i in range(len(labels)):
-            side_event = contexts[i].strip()
-            name_event = labels[i].strip().replace(" ", "_")
-            key = f"{side_event}_{name_event}"
-            if key not in all_events:
-                all_events[key] = []
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("c3d_file", help="Path to a C3D recording.")
+    return parser.parse_args(argv)
 
-            # konwersja czasu (s) → frame index
-            time_sec = times[i][1]
-            frame = int(round(time_sec * frequency_points))
-            all_events[key].append(frame)
+def main(argv=None) -> None:
+    args = parse_args(argv)
+    result = read_c3d(args.c3d_file)
 
-    except Exception:
-        pass
+    print(f"File:         {result['path']}")
+    print(f"Frames:       {result['frame_count']}")
+    print(f"Points rate:  {result['point_rate']:.2f} Hz")
+    print(f"Analogs rate: {result['analog_rate']:.2f} Hz")
+    print(f"Point labels: {len(result['points'])}")
+    print(f"Analog labels:{len(result['analogs']):2d}")
+    print(f"Event groups: {len(result['events'])}")
+    if result["height"] is not None:
+        print(f"Height:       {result['height']:.1f} mm")
+    if result["bodymass"] is not None:
+        print(f"Body mass:    {result['bodymass']:.1f} kg")
 
-    # =============================
-    # 6) Gait cycles example (hip/knee/ankle sagittal angles)
-    # =============================
-    gait_data = {}
-    for side in ['Left', 'Right']:
-        key = f"{side}_Foot_Strike"
-        if key not in all_events:
-            continue
+    for event_name, frames in sorted(result["events"].items()):
+        print(f"  {event_name}: {frames}")
 
-        number_cycles = len(all_events[key]) - 1
-        for c in range(number_cycles):
-            begin_cycle = all_events[key][c] - first_frame
-            end_cycle = all_events[key][c+1] - first_frame
-            for joint in ["Hip", "Knee", "Ankle"]:
-                label = f"{side[0]}{joint}Angles"
-                if label not in all_points:
-                    continue
-                kinematic_data = all_points[label][begin_cycle:end_cycle]
-                kinematic_sagittal_plane = kinematic_data[:, 0]
 
-                # zapis do dict
-                gait_data.setdefault(side, {}).setdefault(joint, []).append(kinematic_sagittal_plane)
-
-print("Pipeline loaded successfully!")
-print("Markers:", list(all_points.keys())[:5])
-print("Analogs:", list(all_analogs.keys())[:5])
-print("Events:", list(all_events.keys()))
+if __name__ == "__main__":
+    main()

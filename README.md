@@ -1,92 +1,168 @@
 # Motion Capture CAE Anomaly Detection
 
-Convolutional autoencoder pipeline for detecting gait anomalies in motion capture data. The project follows the idea from the cited paper: train the reconstruction model on female gait cycles and treat male gait cycles as anomalies when their reconstruction error is higher.
+Research prototype for one-class anomaly detection in gait-cycle motion-capture
+data. A residual 1D convolutional autoencoder (CAE) is trained on gait cycles
+from female participants and evaluated on held-out female and male
+participants.
 
-## Based On
+## Pipeline
 
-- Dataset article: https://www.nature.com/articles/s41597-024-03420-y
-- Method paper: https://link.springer.com/article/10.1007/s11831-025-10260-5
+The end-to-end pipeline:
 
-## Repository Layout
+1. Finds post-processed recording CSV files for overground walking.
+2. Extracts selected lower-limb kinematic and kinetic channels.
+3. Segments recordings into gait cycles, fills missing values, smooths each
+   signal and resamples every cycle to 101 time points.
+4. Splits data by participant to avoid subject leakage:
+   - training: female participants only;
+   - validation: different female participants only;
+   - test: remaining female participants and all male participants.
+5. Computes per-channel Z-score statistics on the training split only.
+6. Trains a residual 1D CAE with GroupNorm, GELU and a temporal-derivative
+   reconstruction penalty.
+7. Calculates anomaly scores and reports ROC-AUC, average precision, accuracy,
+   precision, recall, F1 and the confusion matrix.
 
-- [data_reader.py](data_reader.py) - CSV discovery, parsing, interpolation, and dataset splitting
-- [dataset_torch.py](dataset_torch.py) - PyTorch dataset wrapper
-- [model.py](model.py) - 1D convolutional autoencoder
-- [train.py](train.py) - train/validation utilities
-- [evaluate.py](evaluate.py) - anomaly scoring and metrics
-- [run_experiment.py](run_experiment.py) - end-to-end experiment runner
-- [requirements.txt](requirements.txt) - Python dependencies
+The anomaly score is:
 
-## Requirements
+```text
+score = MSE(x, reconstruction) + 0.5 * MSE(Δx, Δreconstruction)
+```
 
-- Python 3.12 was used in the workspace environment
-- PyTorch, NumPy, Pandas, SciPy, and scikit-learn
-- Access to the dataset directory downloaded from the article
+Higher scores are treated as more anomalous.
 
-## Expected Dataset Structure
+## Data source
 
-The loader expects a directory layout like this:
+The project targets the dataset described in:
+
+- [3D motion analysis dataset of healthy young adult volunteers walking and running on overground and treadmill](https://doi.org/10.1038/s41597-024-03420-y)
+  (Riglet et al., *Scientific Data*, 2024).
+- [Dataset archive on Figshare](https://doi.org/10.6084/m9.figshare.c.7056797.v1),
+  including `metadata.xlsx` and `Data_Run_Walk.zip`.
+
+Download the dataset by following the article's **Data Records** section. The
+main experiment consumes post-processed CSV files, not the raw C3D files.
+
+By default, the loader uses both sessions and the `Walk_Comfortable`
+overground condition. It expects this structure:
 
 ```text
 Data_Run_Walk/
-	SUBJECT_ID/
-		Session1/
-			Overground_Walk/
-				Walk_Comfortable/
-					Post_Process/
-						Walk_Comfortable1.csv
-				Walk_Fast/
-				Walk_Slow/
-		Session2/
+└── AJ026/
+    ├── Session1/
+    │   └── Overground_Walk/
+    │       └── Walk_Comfortable/
+    │           └── Post_Process/
+    │               ├── Walk_Comfortable1.csv
+    │               ├── Walk_Comfortable2.csv
+    │               └── ...
+    └── Session2/
+        └── Overground_Walk/
+            └── Walk_Comfortable/
+                └── Post_Process/
+                    └── Walk_Comfortable1.csv
 ```
 
-## Install
+Only files matching `<condition><recording-number>.csv` are loaded. Participant
+sex is resolved with the fixed 30-participant map in
+[`data_reader.py`](data_reader.py); unknown participant IDs are skipped.
+
+## Requirements
+
+- Python 3.12
+- c3d
+- NumPy
+- pandas
+- SciPy
+- scikit-learn
+- PyTorch
+
+A CUDA-capable PyTorch installation is optional. The runner selects CUDA when
+available and otherwise uses the CPU.
+
+## Installation
+
+From the repository root:
+
+### Windows PowerShell
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+### Linux, macOS or WSL
 
 ```bash
-python3 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 ```
 
-## Run
+The dependency file pins the versions used by the verified environment.
 
-Run the full experiment on the real dataset:
+## Quick start
+
+### Smoke test
 
 ```bash
-python3 run_experiment.py --dataset-root /path/to/Data_Run_Walk
+python run_experiment.py \
+  --smoke-test \
+  --epochs 1 \
+  --output-dir artifacts_smoke
 ```
 
-Useful options:
+### Real-data experiment
+
+```powershell
+python run_experiment.py --dataset-root "E:\path\to\Data_Run_Walk" --cache-file "cache\walk_comfortable_101_seed42.npz" --output-dir "artifacts" --epochs 30
+```
+
+## Tests
 
 ```bash
-python3 run_experiment.py --epochs 50 --batch-size 32 --val-percentile 1
+python -m unittest discover -s tests -v
 ```
 
-Run a synthetic smoke test without the real dataset:
+## Threshold selection
 
-```bash
-python3 run_experiment.py --smoke-test
-```
+`--val-percentile` selects a percentile of reconstruction scores from the
+female-only validation split. A test sample is classified as anomalous when its
+score is greater than or equal to that threshold.
 
-Outputs are written to `artifacts/`:
+## Command-line options
 
-- `best_model.pt`
-- `metrics.json`
-- `report.md`
+Run `python run_experiment.py --help` for the complete CLI. The main options
+are:
 
-The processed dataset cache is stored in `cache/processed_walk_comfortable.npz` and reused on later runs.
+| Option              |                            Default | Meaning                                        |
+|---------------------|-----------------------------------:|------------------------------------------------|
+| `--dataset-root`    | `/mnt/e/ML_datasets/Data_Run_Walk` | Dataset directory                              |
+| `--output-dir`      |                        `artifacts` | Checkpoint and report directory                |
+| `--epochs`          |                               `30` | Training epochs                                |
+| `--batch-size`      |                               `32` | DataLoader batch size                          |
+| `--lr`              |                            `0.001` | Adam learning rate                             |
+| `--latent-channels` |                              `128` | Latent channel count                           |
+| `--seed`            |                               `42` | NumPy and PyTorch seed                         |
+| `--val-percentile`  |                             `95.0` | Validation-score threshold percentile          |
+| `--n-samples`       |                              `101` | Time points per normalized gait cycle          |
+| `--num-workers`     |                                `4` | Threads used while loading CSV files           |
+| `--rebuild-cache`   |                                off | Explicitly replace an existing processed cache |
+| `--conditions`      |                 `Walk_Comfortable` | Conditions to include                          |
+| `--sessions`        |                `Session1 Session2` | Sessions to include                            |
+| `--device`          |   CUDA if available, otherwise CPU | PyTorch device                                 |
+| `--smoke-test`      |                                off | Use synthetic data                             |
 
-## What The Pipeline Does
+## Method reference
 
-1. Loads gait cycles from female and male subjects.
-2. Normalizes each cycle to a fixed length.
-3. Splits the data subject-wise so that training and validation use only female cycles, while test includes the remaining female cycles plus all male cycles.
-4. Trains a convolutional autoencoder on female cycles.
-5. Uses the validation reconstruction error to set an anomaly threshold.
-6. Reports ROC-AUC, average precision, and threshold-based classification metrics on the test set.
-7. Adds a derivative-based reconstruction penalty and score to better separate gait dynamics.
+The autoencoder design is informed by general reconstruction-based anomaly
+detection concepts discussed in:
 
-## Notes
+- [Deep Autoencoder Neural Networks: A Comprehensive Review and New Perspectives](https://doi.org/10.1007/s11831-025-10260-5)
+  (Mienye and Swart, *Archives of Computational Methods in Engineering*, 2025).
 
-- If the dataset path is wrong, the loader now fails with a clear error.
-- If you want, I can also add a small results notebook or a table-ready CSV export of the metrics.
+This review is background material; it does not define the sex-based experiment
+implemented in this repository.
